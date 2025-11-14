@@ -1,0 +1,55 @@
+trigger:
+  - main
+
+variables:
+  # change these if your resource names differ
+  acrName: acrmicroapp
+  aksResourceGroup: rg-microapp
+  aksClusterName: aks-microapp
+  imageTag: 'v1.$(Build.BuildId)'
+
+# Use your self-hosted agent pool
+pool:
+  name: Default
+
+stages:
+  - stage: BuildPush
+    displayName: Build & Push Docker Images
+    jobs:
+      - job: BuildPush
+        displayName: Build & Push
+        steps:
+          - script: |
+              echo "Logging in to Azure..."
+              az account show --output table
+
+              echo "Logging into ACR..."
+              az acr login --name $(acrName)
+
+              echo "Build user-service..."
+              docker build -t $(acrName).azurecr.io/user-service:$(imageTag) ./microservices/user-service
+              docker push $(acrName).azurecr.io/user-service:$(imageTag)
+
+              echo "Build order-service..."
+              docker build -t $(acrName).azurecr.io/order-service:$(imageTag) ./microservices/order-service
+              docker push $(acrName).azurecr.io/order-service:$(imageTag)
+            displayName: Build and push images
+
+  - stage: Deploy
+    displayName: Deploy to AKS
+    dependsOn: BuildPush
+    jobs:
+      - job: Deploy
+        displayName: Deploy to AKS
+        steps:
+          - script: |
+              echo "Getting AKS credentials..."
+              az aks get-credentials --resource-group $(aksResourceGroup) --name $(aksClusterName) --overwrite-existing
+
+              echo "Update image tag in manifests..."
+              # assumes k8s manifests use IMAGE_TAG placeholder
+              find k8s-manifests -type f -name "*.yaml" -exec sed -i "s|IMAGE_TAG|$(imageTag)|g" {} \;
+
+              echo "Applying manifests..."
+              kubectl apply -f k8s-manifests/
+            displayName: Deploy to AKS
