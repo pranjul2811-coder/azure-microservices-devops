@@ -1,86 +1,55 @@
 trigger:
-  branches:
-    include:
-      - main
+  - main
 
 variables:
-  azureSubscription: 'Azure subscription 1'
-  acrName: 'acrmicroapp.azurecr.io'
-  aksResourceGroup: 'rg-microapp'
-  aksClusterName: 'aks-microapp'
-  imageTag: '$(Build.BuildId)'
+  # change these if your resource names differ
+  acrName: acrmicroapp
+  aksResourceGroup: rg-microapp
+  aksClusterName: aks-microapp
+  imageTag: 'v1.$(Build.BuildId)'
 
+# Use your self-hosted agent pool
 pool:
-  vmImage: 'ubuntu-latest'
+  name: Default
 
 stages:
+  - stage: BuildPush
+    displayName: Build & Push Docker Images
+    jobs:
+      - job: BuildPush
+        displayName: Build & Push
+        steps:
+          - script: |
+              echo "Logging in to Azure..."
+              az account show --output table
 
-# ============================
-#   BUILD & PUSH IMAGES
-# ============================
-- stage: Build
-  displayName: "Build & Push Docker Images"
-  jobs:
-    - job: BuildPush
-      displayName: "Build & Push"
-      steps:
-
-        - checkout: self
-
-        # Login to Azure
-        - task: AzureCLI@2
-          inputs:
-            azureSubscription: 'Azure subscription 1'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
               echo "Logging into ACR..."
-              az acr login --name acrmicroapp
+              az acr login --name $(acrName)
 
-        # Build & Push USER SERVICE
-        - script: |
-            echo "Building user-service..."
-            docker build -t $(acrName)/user-service:$(imageTag) microservices/user-service/
-            docker push $(acrName)/user-service:$(imageTag)
-          displayName: "Build & Push user-service"
+              echo "Build user-service..."
+              docker build -t $(acrName).azurecr.io/user-service:$(imageTag) ./microservices/user-service
+              docker push $(acrName).azurecr.io/user-service:$(imageTag)
 
-        # Build & Push ORDER SERVICE
-        - script: |
-            echo "Building order-service..."
-            docker build -t $(acrName)/order-service:$(imageTag) microservices/order-service/
-            docker push $(acrName)/order-service:$(imageTag)
-          displayName: "Build & Push order-service"
+              echo "Build order-service..."
+              docker build -t $(acrName).azurecr.io/order-service:$(imageTag) ./microservices/order-service
+              docker push $(acrName).azurecr.io/order-service:$(imageTag)
+            displayName: Build and push images
 
-
-# ============================
-#   DEPLOY TO AKS
-# ============================
-- stage: Deploy
-  displayName: "Deploy to AKS"
-  dependsOn: Build
-  jobs:
-    - job: DeployToAKS
-      displayName: "Apply Kubernetes Manifests"
-      steps:
-
-        - checkout: self
-
-        # Login to Azure & get AKS credentials
-        - task: AzureCLI@2
-          inputs:
-            azureSubscription: 'Azure subscription 1'
-            scriptType: bash
-            scriptLocation: inlineScript
-            inlineScript: |
+  - stage: Deploy
+    displayName: Deploy to AKS
+    dependsOn: BuildPush
+    jobs:
+      - job: Deploy
+        displayName: Deploy to AKS
+        steps:
+          - script: |
               echo "Getting AKS credentials..."
-              az aks get-credentials \
-                --resource-group $(aksResourceGroup) \
-                --name $(aksClusterName) --overwrite-existing
+              az aks get-credentials --resource-group $(aksResourceGroup) --name $(aksClusterName) --overwrite-existing
 
-              echo "Updating images in k8s manifests..."
-              sed -i "s|IMAGE_TAG|$(imageTag)|g" k8s-manifests/*
+              echo "Update image tag in manifests..."
+              # assumes k8s manifests use IMAGE_TAG placeholder
+              find k8s-manifests -type f -name "*.yaml" -exec sed -i "s|IMAGE_TAG|$(imageTag)|g" {} \;
 
-              echo "Applying Kubernetes manifests..."
+              echo "Applying manifests..."
               kubectl apply -f k8s-manifests/
-
-          displayName: "Deploy to AKS"
+            displayName: Deploy to AKS
